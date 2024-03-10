@@ -1,10 +1,14 @@
+use approx::{relative_eq, relative_ne};
+use core::f64;
+use plotters::prelude::*;
+use pracownia_elektroniczna::measurements_uncertainties;
 use serde::Deserialize;
 use std::error::Error;
 
-use plotters::prelude::*;
+const W_START: f64 = 2. * std::f64::consts::PI * 100.;
 
-fn alpha(w: f64, r: f64, c: f64) -> f64 {
-    let rwc = r * w * c;
+fn alpha(w: f64, rc: f64) -> f64 {
+    let rwc = w * rc;
 
     rwc / (1. + rwc.powi(2)).sqrt()
 }
@@ -26,22 +30,75 @@ struct Measurement {
     u_phase_shift_resolution: f64,
 }
 
-struct WAlpha {
-    w: f64,
-    w_uncertainty: f64,
-    alpha: f64,
-    alpha_uncertainty: f64,
+fn alpha_line_series<S>(rc: f64, style: S) -> LineSeries<SVGBackend<'static>, (f64, f64)>
+where
+    S: Into<ShapeStyle>,
+{
+    let alpha: LineSeries<SVGBackend<'_>, (f64, f64)> = LineSeries::new(
+        [W_START]
+            .into_iter()
+            //w \in (1^3, 10^5)
+            .chain(
+                (10..=1000)
+                    .map(|i| {
+                        let w = i as f64 * 1e2;
+
+                        w
+                    })
+                    //w \in (10^5, 10^5 + 10^7)
+                    .chain((0..1000).map(|i| {
+                        let w = i as f64 * 1e4 + 1e5;
+
+                        w
+                    })),
+            )
+            .map(|w| (w, alpha(w, rc))),
+        style,
+    );
+
+    alpha
+}
+
+fn alpha_from_voltages(u_in: f64, u_out: f64) -> f64 {
+    (u_out / u_in).abs()
+}
+
+fn fit_rc(entries: &[Measurement]) -> f64 {
+    //co xd? musisz przeliczyć przedziałki na których liczysz w faktyczne u_in/u_out
+    let (w, beta): (Vec<_>, Vec<_>) = entries
+        .into_iter()
+        .filter(|e| {
+            let u_in = e.u_in * e.u_in_resolution;
+            let u_out = e.u_out * e.u_out_resolution;
+            let alpha_i = alpha_from_voltages(u_in, u_out);
+
+            relative_ne!(alpha_i, 1.)
+        })
+        .map(|e| {
+            let w_i = e.w;
+            let u_in = e.u_in * e.u_in_resolution;
+            let u_out = e.u_out * e.u_out_resolution;
+
+            let alpha_i = alpha_from_voltages(u_in, u_out);
+            let beta_i = alpha_i / (1. - alpha_i).sqrt();
+
+            (w_i, beta_i)
+        })
+        .unzip();
+
+    let model_rc: f64 = w
+        .iter()
+        .zip(beta.iter())
+        .map(|(&w_i, &b_i)| w_i * b_i)
+        .sum::<f64>()
+        / w.into_iter().map(|w_i| w_i.powi(2)).sum::<f64>();
+
+    model_rc
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     const R: f64 = 1e3;
     const C: f64 = 100e-9;
-
-    const W_START: f64 = 2. * std::f64::consts::PI * 100.;
-
-    let entries: Vec<Measurement> = csv::Reader::from_path("data/high-pass-filter.csv")?
-        .deserialize()
-        .collect::<Result<_, _>>()?;
 
     let drawing_area =
         SVGBackend::new("plots/high-pass-filter-alpha-ref.svg", (800, 600)).into_drawing_area();
@@ -65,33 +122,41 @@ fn main() -> Result<(), Box<dyn Error>> {
         .axis_desc_style(("sans-serif", 15))
         .draw()?;
 
-    let theoretical_alpha: LineSeries<_, _> = LineSeries::new(
-        [W_START]
-            .into_iter()
-            //w \in (1^3, 10^5)
-            .chain(
-                (10..=1000)
-                    .map(|i| {
-                        let w = i as f64 * 1e2;
+    let entries: Vec<Measurement> = csv::Reader::from_path("data/high-pass-filter.csv")?
+        .deserialize()
+        .collect::<Result<_, _>>()?;
 
-                        w
-                    })
-                    //w \in (10^5, 10^5 + 10^7)
-                    .chain((0..1000).map(|i| {
-                        let w = i as f64 * 1e4 + 1e5;
+    let fitted_rc = fit_rc(&entries);
+    println!("fitted_rc: {fitted_rc}");
 
-                        w
-                    })),
-            )
-            .map(|w| (w, alpha(w, R, C))),
-        RED.filled(),
-    );
-
-//    let experimental_alpha_measurements: 
+    let theoretical_alpha = alpha_line_series(R * C, &GREEN);
+    let fit_alpha_plot = alpha_line_series(fitted_rc, &RED);
 
     chart_context
         .draw_series(theoretical_alpha)?
         .label("Oczekiwany model");
+
+    chart_context
+        .draw_series(fit_alpha_plot)?
+        .label("Dopasowany model");
+
+    chart_context
+        .draw_series(entries.iter().map(|e| {
+            let u_in = e.u_in * e.u_in_resolution;
+            let u_out = e.u_out * e.u_out_resolution;
+            //TODO error propagation
+            let u_err = 0.02;
+            let alpha_i = alpha_from_voltages(u_in, u_out);
+            ErrorBar::new_vertical(
+                e.w,
+                alpha_i - 0.02,
+                alpha_i,
+                alpha_i + 0.02,
+                BLUE.filled(),
+                5,
+            )
+        }))?
+        .label("Pomiary");
 
     drawing_area.present()?;
 
