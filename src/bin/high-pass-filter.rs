@@ -1,13 +1,13 @@
 use approx::{relative_eq, relative_ne};
 use core::f64;
 use plotters::prelude::*;
-use pracownia_elektroniczna::measurements_uncertainties;
 use serde::Deserialize;
 use std::error::Error;
 
 const W_START: f64 = 2. * std::f64::consts::PI * 100.;
+const H: f64 = 1e-6;
 
-fn alpha(w: f64, rc: f64) -> f64 {
+fn alpha_from_w_rc(w: f64, rc: f64) -> f64 {
     let rwc = w * rc;
 
     rwc / (1. + rwc.powi(2)).sqrt()
@@ -52,7 +52,7 @@ where
                         w
                     })),
             )
-            .map(|w| (w, alpha(w, rc))),
+            .map(|w| (w, alpha_from_w_rc(w, rc))),
         style,
     );
 
@@ -63,8 +63,14 @@ fn alpha_from_voltages(u_in: f64, u_out: f64) -> f64 {
     (u_out / u_in).abs()
 }
 
+fn beta(u_in: f64, u_out: f64) -> f64 {
+    let alpha_i = alpha_from_voltages(u_in, u_out);
+    let beta_i = alpha_i / (1. - alpha_i.powi(2)).sqrt();
+
+    beta_i
+}
+
 fn fit_rc(entries: &[Measurement]) -> f64 {
-    //co xd? musisz przeliczyć przedziałki na których liczysz w faktyczne u_in/u_out
     let (w, beta): (Vec<_>, Vec<_>) = entries
         .into_iter()
         .filter(|e| {
@@ -76,12 +82,13 @@ fn fit_rc(entries: &[Measurement]) -> f64 {
         })
         .map(|e| {
             let w_i = e.w;
+
             let u_in = e.u_in * e.u_in_resolution;
             let u_out = e.u_out * e.u_out_resolution;
 
-            let alpha_i = alpha_from_voltages(u_in, u_out);
-            let beta_i = alpha_i / (1. - alpha_i).sqrt();
+            let beta_i = beta(u_in, u_out);
 
+            //assuming w_i is with no uncertainty
             (w_i, beta_i)
         })
         .unzip();
@@ -89,9 +96,9 @@ fn fit_rc(entries: &[Measurement]) -> f64 {
     let model_rc: f64 = w
         .iter()
         .zip(beta.iter())
-        .map(|(&w_i, &b_i)| w_i * b_i)
+        .map(|(w_i, b_i)| w_i * b_i)
         .sum::<f64>()
-        / w.into_iter().map(|w_i| w_i.powi(2)).sum::<f64>();
+        / w.iter().map(|w_i| w_i.powi(2)).sum::<f64>();
 
     model_rc
 }
@@ -110,7 +117,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .margin(40)
         .set_label_area_size(LabelAreaPosition::Left, 40)
         .set_label_area_size(LabelAreaPosition::Bottom, 40)
-        .build_cartesian_2d((W_START..1e7).log_scale(), 0f64..1.0)?;
+        .build_cartesian_2d((W_START..1e7).log_scale(), 0f64..1.2)?;
 
     chart_context
         .configure_mesh()
@@ -133,10 +140,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let fit_alpha_plot = alpha_line_series(fitted_rc, &RED);
 
     chart_context
-        .draw_series(theoretical_alpha)?
-        .label("Oczekiwany model");
-
-    chart_context
         .draw_series(fit_alpha_plot)?
         .label("Dopasowany model");
 
@@ -144,14 +147,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         .draw_series(entries.iter().map(|e| {
             let u_in = e.u_in * e.u_in_resolution;
             let u_out = e.u_out * e.u_out_resolution;
-            //TODO error propagation
-            let u_err = 0.02;
+
+            let u_in_uncertainty = 0.2 * e.u_in_resolution / f64::sqrt(3.);
+            let u_out_uncertainty = 0.2 * e.u_out_resolution / f64::sqrt(3.);
+
             let alpha_i = alpha_from_voltages(u_in, u_out);
+            let alpha_i_uncertainty = ((u_out_uncertainty / u_in).powi(2)
+                + (u_out / u_in.powi(2) * u_in_uncertainty).powi(2))
+            .sqrt();
+
             ErrorBar::new_vertical(
                 e.w,
-                alpha_i - 0.02,
+                alpha_i - alpha_i_uncertainty / 2.,
                 alpha_i,
-                alpha_i + 0.02,
+                alpha_i + alpha_i_uncertainty / 2.,
                 BLUE.filled(),
                 5,
             )
