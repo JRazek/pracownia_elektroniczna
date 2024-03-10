@@ -1,2 +1,2 @@
-pub mod measurements_uncertainties;
+pub mod distributions;
 pub mod integral;
