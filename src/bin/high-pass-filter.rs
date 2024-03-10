@@ -10,7 +10,7 @@ fn alpha(w: f64, r: f64, c: f64) -> f64 {
 }
 
 #[derive(Deserialize, Debug)]
-struct Entry {
+struct Measurement {
     w: f64,
 
     u_in: f64,
@@ -26,13 +26,20 @@ struct Entry {
     u_phase_shift_resolution: f64,
 }
 
+struct WAlpha {
+    w: f64,
+    w_uncertainty: f64,
+    alpha: f64,
+    alpha_uncertainty: f64,
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     const R: f64 = 1e3;
     const C: f64 = 100e-9;
 
     const W_START: f64 = 2. * std::f64::consts::PI * 100.;
 
-    let entries: Vec<Entry> = csv::Reader::from_path("data/high-pass-filter.csv")?
+    let entries: Vec<Measurement> = csv::Reader::from_path("data/high-pass-filter.csv")?
         .deserialize()
         .collect::<Result<_, _>>()?;
 
@@ -79,6 +86,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             .map(|w| (w, alpha(w, R, C))),
         RED.filled(),
     );
+
+//    let experimental_alpha_measurements: 
 
     chart_context
         .draw_series(theoretical_alpha)?
