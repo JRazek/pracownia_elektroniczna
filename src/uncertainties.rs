@@ -94,7 +94,7 @@ mod tests {
     fn test_linear() {
         let dev: AutoDevice = Default::default();
 
-        let dataset = vec![(0f32, 0f32), (1f32, 2f32), (3f32, 6f32), (4f32, 8f32)];
+        let dataset = vec![(0f32, 0f32), (1f32, -2f32), (3f32, -6f32), (4f32, -8f32)];
 
         let params = dev.sample_normal();
         let f = LinearFunction;
@@ -103,6 +103,46 @@ mod tests {
             .unwrap()
             .array()[0];
 
-        assert_relative_eq!(params_fitted, 2f32);
+        assert_relative_eq!(params_fitted, -2f32);
+    }
+
+    struct ExpFunction;
+
+    impl<D> Function<D, 1> for ExpFunction
+    where
+        D: Device<f32>,
+    {
+        fn eval<PTape, XTape>(
+            &self,
+            x_i: Tensor<Rank0, f32, D, XTape>,
+            params: Tensor<Rank1<1>, f32, D, PTape>,
+        ) -> Tensor<Rank0, f32, D, PTape>
+        where
+            PTape: Tape<f32, D> + Merge<XTape>,
+            XTape: Tape<f32, D>,
+        {
+            (params.sum() * x_i).exp()
+        }
+    }
+
+    #[test]
+    fn test_exp() {
+        let dev: AutoDevice = Default::default();
+        let f = ExpFunction;
+
+        let exp = |x: f32| (x * 0.3).exp();
+
+        let dataset = (0..10)
+            .into_iter()
+            .map(|x| (x as f32) / 10.)
+            .map(|x| (x, exp(x as f32)));
+
+        let params = dev.sample_normal();
+
+        let params_fitted = fit(dataset.into_iter(), f, 1000, SgdConfig::default(), params)
+            .unwrap()
+            .array()[0];
+
+        assert_relative_eq!(params_fitted, 0.3f32);
     }
 }
