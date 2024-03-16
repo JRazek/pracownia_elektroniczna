@@ -19,7 +19,7 @@ where
 }
 
 fn sample_error<D, const N: usize, F, T>(
-    dataset_xi_yi: (f32, f32),
+    data_entry: DataEntry,
     f: impl Borrow<F>,
     params: Tensor<Rank1<N>, f32, D, T>,
 ) -> Tensor<(), f32, D, T>
@@ -28,18 +28,36 @@ where
     F: Function<D, N>,
     T: Tape<f32, D>,
 {
-    let (x, y) = dataset_xi_yi;
+    let DataEntry { x, y, weight } = data_entry;
 
     let x = params.device().tensor(x);
     let y = params.device().tensor(y);
 
-    let error_i = f.borrow().eval(x, params).sub(y).square();
+    let error_i = f.borrow().eval(x, params).sub(y).square() * weight;
 
     error_i
 }
 
+pub struct DataEntry {
+    pub x: f32,
+    pub y: f32,
+    pub weight: f32,
+}
+
+impl From<(f32, f32)> for DataEntry {
+    fn from((x, y): (f32, f32)) -> Self {
+        DataEntry { x, y, weight: 1.0 }
+    }
+}
+
+impl From<(f32, f32, f32)> for DataEntry {
+    fn from((x, y, weight): (f32, f32, f32)) -> Self {
+        DataEntry { x, y, weight }
+    }
+}
+
 pub fn fit<D, const N: usize, F>(
-    dataset_xi_yi: impl Iterator<Item = (f32, f32)> + Clone,
+    dataset_xi_yi: impl Iterator<Item = DataEntry> + Clone,
     f: F,
     training_iterations: usize,
     sgd_config: SgdConfig,
@@ -99,9 +117,15 @@ mod tests {
         let params = dev.sample_normal();
         let f = LinearFunction;
 
-        let params_fitted = fit(dataset.into_iter(), f, 100, SgdConfig::default(), params)
-            .unwrap()
-            .array()[0];
+        let params_fitted = fit(
+            dataset.into_iter().map(|x| x.into()),
+            f,
+            100,
+            SgdConfig::default(),
+            params,
+        )
+        .unwrap()
+        .array()[0];
 
         assert_relative_eq!(params_fitted, -2f32);
     }
@@ -139,9 +163,15 @@ mod tests {
 
         let params = dev.sample_normal();
 
-        let params_fitted = fit(dataset.into_iter(), f, 1000, SgdConfig::default(), params)
-            .unwrap()
-            .array()[0];
+        let params_fitted = fit(
+            dataset.into_iter().map(|x| x.into()),
+            f,
+            1000,
+            SgdConfig::default(),
+            params,
+        )
+        .unwrap()
+        .array()[0];
 
         assert_relative_eq!(params_fitted, 0.3f32);
     }
