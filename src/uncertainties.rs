@@ -28,7 +28,11 @@ where
     F: Function<D, N>,
     T: Tape<f32, D>,
 {
-    let DataEntry { x, y, weight } = data_entry;
+    let DataEntry {
+        x,
+        y,
+        uncertainty: weight,
+    } = data_entry;
 
     let x = params.device().tensor(x);
     let y = params.device().tensor(y);
@@ -41,18 +45,26 @@ where
 pub struct DataEntry {
     pub x: f32,
     pub y: f32,
-    pub weight: f32,
+    pub uncertainty: f32,
 }
 
 impl From<(f32, f32)> for DataEntry {
     fn from((x, y): (f32, f32)) -> Self {
-        DataEntry { x, y, weight: 1.0 }
+        DataEntry {
+            x,
+            y,
+            uncertainty: 1.0,
+        }
     }
 }
 
 impl From<(f32, f32, f32)> for DataEntry {
     fn from((x, y, weight): (f32, f32, f32)) -> Self {
-        DataEntry { x, y, weight }
+        DataEntry {
+            x,
+            y,
+            uncertainty: weight,
+        }
     }
 }
 
@@ -82,6 +94,29 @@ where
     }
 
     Ok(initial)
+}
+
+pub fn fit_with_std_dev<D, const N: usize, F>(
+    dataset_xi_yi: impl Iterator<Item = DataEntry> + Clone,
+    monte_carlo_fits: usize,
+    f: F,
+    training_iterations: usize,
+    sgd_config: SgdConfig,
+) -> Result<Tensor<Rank1<N>, f32, D>, Box<dyn std::error::Error>>
+where
+    D: Device<f32>,
+    F: Function<D, N>,
+{
+    let dev = D::default();
+    let distributed_dataset = dataset_xi_yi
+        .clone()
+        .map(|DataEntry { x, y, uncertainty }| {
+//            let distributed_x = dev.sample_normal() * uncertainty + x;
+//            let distributed_y = dev.sample_normal() * uncertainty + y;
+
+        });
+
+    todo!()
 }
 
 #[cfg(test)]
