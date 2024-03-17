@@ -19,7 +19,7 @@ where
 }
 
 fn sample_error<D, const N: usize, F, T>(
-    data_entry: DataEntry,
+    data_entry: (f32, f32),
     f: impl Borrow<F>,
     params: Tensor<Rank1<N>, f32, D, T>,
 ) -> Tensor<(), f32, D, T>
@@ -28,48 +28,23 @@ where
     F: Function<D, N>,
     T: Tape<f32, D>,
 {
-    let DataEntry {
-        x,
-        y,
-        uncertainty: weight,
-    } = data_entry;
+    let (x, y) = data_entry;
 
     let x = params.device().tensor(x);
     let y = params.device().tensor(y);
 
-    let error_i = f.borrow().eval(x, params).sub(y).square() * weight;
+    let error_i = f.borrow().eval(x, params).sub(y).square();
 
     error_i
 }
 
 pub struct DataEntry {
-    pub x: f32,
-    pub y: f32,
-    pub uncertainty: f32,
-}
-
-impl From<(f32, f32)> for DataEntry {
-    fn from((x, y): (f32, f32)) -> Self {
-        DataEntry {
-            x,
-            y,
-            uncertainty: 1.0,
-        }
-    }
-}
-
-impl From<(f32, f32, f32)> for DataEntry {
-    fn from((x, y, weight): (f32, f32, f32)) -> Self {
-        DataEntry {
-            x,
-            y,
-            uncertainty: weight,
-        }
-    }
+    pub x: (f32, f32),
+    pub y: (f32, f32),
 }
 
 pub fn fit<D, const N: usize, F>(
-    dataset_xi_yi: impl Iterator<Item = DataEntry> + Clone,
+    dataset_xi_yi: impl Iterator<Item = (f32, f32)> + Clone,
     f: F,
     training_iterations: usize,
     sgd_config: SgdConfig,
@@ -102,21 +77,63 @@ pub fn fit_with_std_dev<D, const N: usize, F>(
     f: F,
     training_iterations: usize,
     sgd_config: SgdConfig,
-) -> Result<Tensor<Rank1<N>, f32, D>, Box<dyn std::error::Error>>
+) -> Result<Tensor<Rank2<N, 2>, f32, D>, Box<dyn std::error::Error>>
 where
-    D: Device<f32>,
-    F: Function<D, N>,
+    D: Device<f32> + TensorToArray<Rank1<N>, f32, Array = [f32; N]>,
+    F: Function<D, N> + Clone,
 {
     let dev = D::default();
-    let distributed_dataset = dataset_xi_yi
-        .clone()
-        .map(|DataEntry { x, y, uncertainty }| {
-//            let distributed_x = dev.sample_normal() * uncertainty + x;
-//            let distributed_y = dev.sample_normal() * uncertainty + y;
 
-        });
+    let mut fitted_params: Vec<Vec<f32>> = Vec::with_capacity(monte_carlo_fits);
 
-    todo!()
+    for _ in 0..monte_carlo_fits {
+        use rand_distr::Distribution;
+        let mut rng = rand::thread_rng();
+        let normal = rand_distr::StandardNormal;
+
+        let dataset_noise = dataset_xi_yi
+            .clone()
+            .map(
+                |DataEntry {
+                     x: (x, x_std_dev),
+                     y: (y, y_std_dev),
+                 }| {
+                    let sample_x: f32 = normal.sample(&mut rng);
+                    let sample_y: f32 = normal.sample(&mut rng);
+
+                    let x: f32 = x + x_std_dev * sample_x;
+                    let y: f32 = y + y_std_dev * sample_y;
+
+                    (x, y)
+                },
+            )
+            .collect::<Vec<_>>();
+
+        let initial = dev.sample_uniform();
+
+        let fitted = fit(
+            dataset_noise.into_iter(),
+            f.clone(),
+            training_iterations,
+            sgd_config,
+            initial,
+        )?;
+
+        fitted_params.push(fitted.as_vec());
+    }
+
+    let fitted_params: Tensor<(Const<N>, usize), _, _> = dev.tensor_from_vec(
+        fitted_params.into_iter().flatten().collect(),
+        (Const::<N>, monte_carlo_fits),
+    );
+
+    let means: Tensor<Rank2<N, 1>, _, _, _> = fitted_params.clone().mean::<Rank1<N>, _>().reshape();
+    let std_devs: Tensor<Rank2<N, 1>, _, _, _> =
+        fitted_params.clone().stddev::<Rank1<N>, _>(0f32).reshape();
+
+    let res: Tensor<Rank2<N, 2>, _, _, _> = (means, std_devs).concat_along(Axis::<1>::default());
+
+    Ok(res)
 }
 
 #[cfg(test)]
